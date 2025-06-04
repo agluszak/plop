@@ -15,6 +15,8 @@ struct Note {
     pos: Pos2,
     size: Vec2,
     color: Color32,
+    #[serde(skip)]
+    is_editing: bool,
 }
 
 /// Virtual board containing multiple notes
@@ -199,6 +201,7 @@ fn board_ui_system(ui: &mut egui::Ui, board: &mut Board, ev_plop: &mut EventWrit
             pos: pointer_pos,
             size: Vec2 { x: 120.0, y: 80.0 },
             color: Color32::YELLOW,
+            is_editing: false,
         });
         
         // Send event to play sound
@@ -210,6 +213,28 @@ fn board_ui_system(ui: &mut egui::Ui, board: &mut Board, ev_plop: &mut EventWrit
 fn add_note_ui(ui: &mut egui::Ui, note: &mut Note, ev_plop: &mut EventWriter<PlayPlopEvent>) {
     let rect = Rect::from_min_size(note.pos, note.size);
     let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+
+    if response.double_clicked() {
+        note.is_editing = true;
+    }
+
+    if note.is_editing {
+        egui::Window::new(format!("edit_note_{}", note.id))
+            .collapsible(false)
+            .resizable(false)
+            .title_bar(false)
+            .fixed_pos(note.pos)
+            .show(ui.ctx(), |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut note.text)
+                        .desired_width(note.size.x - 10.0),
+                );
+                if ui.button("Done").clicked() {
+                    note.is_editing = false;
+                }
+            });
+        return;
+    }
 
     if response.dragged() {
         // Wiggle offset
