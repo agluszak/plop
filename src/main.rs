@@ -18,9 +18,20 @@ struct NoteData {
 }
 
 /// Runtime UI state for a note
-#[derive(Component, Default)]
+#[derive(Component)]
 struct NoteUi {
     is_editing: bool,
+    /// Current scaling applied while dragging for squishy effect
+    scale: Vec2,
+}
+
+impl Default for NoteUi {
+    fn default() -> Self {
+        Self {
+            is_editing: false,
+            scale: Vec2::new(1.0, 1.0),
+        }
+    }
 }
 
 /// Tag component to associate a note entity with a board
@@ -271,8 +282,9 @@ fn add_note_ui(
     board: &mut Board,
     ev_plop: &mut EventWriter<PlayPlopEvent>,
 ) {
-    let rect = Rect::from_min_size(note.pos, note.size);
-    let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+    // Allocate interaction area based on the original note size
+    let base_rect = Rect::from_min_size(note.pos, note.size);
+    let response = ui.allocate_rect(base_rect, egui::Sense::click_and_drag());
 
     if response.double_clicked() {
         ui_state.is_editing = true;
@@ -300,7 +312,7 @@ fn add_note_ui(
     }
 
     if response.dragged() {
-        // Wiggle offset
+        // Wiggle offset combined with stretchy scaling for a satisfying drag
         let t = ui.ctx().input(|i| i.time as f32);
         let wiggle_amp = 3.0;
         let wiggle_off = wiggle_amp * (t * 15.0).sin();
@@ -312,19 +324,42 @@ fn add_note_ui(
             n.pos = note.pos;
         }
 
-        let wiggle_rect = rect.translate(egui::vec2(wiggle_off, 0.0));
-        ui.painter().rect_filled(wiggle_rect, 4.0, note.color);
+        // Update temporary scaling based on drag speed
+        let stretch_factor = 0.03;
+        let target_scale_x = 1.0 + delta.x.abs() * stretch_factor;
+        let target_scale_y = 1.0 + delta.y.abs() * stretch_factor;
+        ui_state.scale.x += (target_scale_x - ui_state.scale.x) * 0.5;
+        ui_state.scale.y += (target_scale_y - ui_state.scale.y) * 0.5;
+
+        let scaled_size = Vec2::new(
+            note.size.x * ui_state.scale.x,
+            note.size.y * ui_state.scale.y,
+        );
+        let mut drag_rect = Rect::from_min_size(note.pos, scaled_size);
+        drag_rect = drag_rect.translate(egui::vec2(wiggle_off, 0.0));
+
+        ui.painter().rect_filled(drag_rect, 4.0, note.color);
         ui.painter().text(
-            wiggle_rect.center(),
+            drag_rect.center(),
             egui::Align2::CENTER_CENTER,
             &note.text,
             egui::FontId::proportional(16.0),
             Color32::BLACK,
         );
     } else {
-        ui.painter().rect_filled(rect, 4.0, note.color);
+        // Gradually return to original scale when not dragging
+        ui_state.scale.x += (1.0 - ui_state.scale.x) * 0.2;
+        ui_state.scale.y += (1.0 - ui_state.scale.y) * 0.2;
+
+        let scaled_size = Vec2::new(
+            note.size.x * ui_state.scale.x,
+            note.size.y * ui_state.scale.y,
+        );
+        let display_rect = Rect::from_min_size(note.pos, scaled_size);
+
+        ui.painter().rect_filled(display_rect, 4.0, note.color);
         ui.painter().text(
-            rect.center(),
+            display_rect.center(),
             egui::Align2::CENTER_CENTER,
             &note.text,
             egui::FontId::proportional(16.0),
