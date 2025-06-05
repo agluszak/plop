@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_egui::EguiContexts;
-use egui::{Color32, Pos2, Rect, Vec2, Stroke};
+use egui::{Color32, Pos2, Rect, Vec2, Stroke, StrokeKind};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -16,17 +16,36 @@ fn snap_to_grid(pos: Pos2) -> Pos2 {
     }
 }
 
-/// Single Post-It note
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct Note {
+/// Data for a single Post-It note
+#[derive(Component, Serialize, Deserialize, Debug, Clone)]
+struct NoteData {
     id: u64,
     text: String,
     pos: Pos2,
     size: Vec2,
     color: Color32,
-    #[serde(skip)]
-    is_editing: bool,
 }
+
+/// Runtime UI state for a note
+#[derive(Component)]
+struct NoteUi {
+    is_editing: bool,
+    /// Current scaling applied while dragging for squishy effect
+    scale: Vec2,
+}
+
+impl Default for NoteUi {
+    fn default() -> Self {
+        Self {
+            is_editing: false,
+            scale: Vec2::new(1.0, 1.0),
+        }
+    }
+}
+
+/// Tag component to associate a note entity with a board
+#[derive(Component)]
+struct BelongsToBoard(u64);
 
 /// Virtual board containing multiple notes
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -34,7 +53,7 @@ struct Board {
     id: u64,
     name: String,
     background: Color32,
-    notes: Vec<Note>,
+    notes: Vec<NoteData>,
     scene_rect: Rect,
 }
 
@@ -115,10 +134,12 @@ fn play_plop_sound(
 }
 
 fn ui_system(
+    mut commands: Commands,
     mut app: ResMut<PostItData>,
     mut contexts: EguiContexts,
     mut active_board: ResMut<ActiveBoard>,
     mut ev_plop: EventWriter<PlayPlopEvent>,
+    mut notes: Query<(Entity, &mut NoteData, &mut NoteUi, &BelongsToBoard)>,
 ) {
     let ctx = contexts.ctx_mut();
     
@@ -142,11 +163,33 @@ fn ui_system(
 
             // Save/Load controls
             if ui.button("Save").clicked() {
+                // Sync notes from ECS into the app state before saving
+                for (_, note, _, belongs) in notes.iter_mut() {
+                    if let Some(board) = app.state.boards.get_mut(&belongs.0) {
+                        if let Some(n) = board.notes.iter_mut().find(|n| n.id == note.id) {
+                            *n = note.clone();
+                        }
+                    }
+                }
                 app.state.save_to_file(&app.save_path);
             }
             if ui.button("Load").clicked() {
                 app.state = AppState::load_from_file(&app.save_path);
                 active_board.0 = app.state.current_board;
+                // Remove existing note entities
+                for (e, _, _, _) in notes.iter_mut() {
+                    commands.entity(e).despawn();
+                }
+                // Spawn notes from loaded state
+                for board in app.state.boards.values() {
+                    for note in &board.notes {
+                        commands.spawn((
+                            note.clone(),
+                            NoteUi::default(),
+                            BelongsToBoard(board.id),
+                        ));
+                    }
+                }
             }
 
             // Board selection dropdown
@@ -175,9 +218,19 @@ fn ui_system(
 
     egui::CentralPanel::default().show(ctx, |ui| {
         if let Some(board_id) = active_board.0 {
+            let mut next_id = app.state.next_note_id;
             if let Some(board) = app.state.boards.get_mut(&board_id) {
-                board_ui_system(ui, board, &mut ev_plop);
+                board_ui_system(
+                    ui,
+                    board,
+                    board_id,
+                    &mut next_id,
+                    &mut notes,
+                    &mut commands,
+                    &mut ev_plop,
+                );
             }
+            app.state.next_note_id = next_id;
         } else {
             ui.centered_and_justified(|ui| {
                 ui.label("Create a new board to get started!");
@@ -187,7 +240,15 @@ fn ui_system(
 }
 
 /// Render a single board: background + draggable notes
-fn board_ui_system(ui: &mut egui::Ui, board: &mut Board, ev_plop: &mut EventWriter<PlayPlopEvent>) {
+fn board_ui_system(
+    ui: &mut egui::Ui,
+    board: &mut Board,
+    board_id: u64,
+    next_note_id: &mut u64,
+    notes: &mut Query<(Entity, &mut NoteData, &mut NoteUi, &BelongsToBoard)>,
+    commands: &mut Commands,
+    ev_plop: &mut EventWriter<PlayPlopEvent>,
+) {
     // Allocate the whole available space for our board area
     let board_rect = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(board_rect, egui::Sense::click_and_drag());
@@ -195,39 +256,50 @@ fn board_ui_system(ui: &mut egui::Ui, board: &mut Board, ev_plop: &mut EventWrit
     // Paint the background
     ui.painter().rect_filled(board_rect, 0.0, board.background);
     
-    // Render existing notes
-    for note in &mut board.notes {
-        add_note_ui(ui, note, ev_plop);
+    // Render existing notes from ECS
+    for (_, mut note, mut ui_state, belongs) in notes.iter_mut() {
+        if belongs.0 == board_id {
+            add_note_ui(ui, &mut note, &mut ui_state, board, ev_plop);
+        }
     }
     
     // If user right-clicks on the board, add new note
     if response.hovered() && ui.ctx().input(|i| i.pointer.button_released(egui::PointerButton::Secondary)) {
-        let id = board.notes.len() as u64 + 1;
+        let id = *next_note_id;
+        *next_note_id += 1;
         let pointer_pos = ui.ctx().pointer_hover_pos().unwrap_or(Pos2 { x: 0.0, y: 0.0 });
-        board.notes.push(Note {
+        let data = NoteData {
             id,
             text: "New note".into(),
             pos: pointer_pos,
             size: Vec2 { x: 120.0, y: 80.0 },
             color: Color32::YELLOW,
-            is_editing: false,
-        });
-        
+        };
+        commands.spawn((data.clone(), NoteUi::default(), BelongsToBoard(board_id)));
+        board.notes.push(data);
+
         // Send event to play sound
         ev_plop.write_default();
     }
 }
 
 /// Draw one note; drag-handling + wiggle
-fn add_note_ui(ui: &mut egui::Ui, note: &mut Note, ev_plop: &mut EventWriter<PlayPlopEvent>) {
-    let rect = Rect::from_min_size(note.pos, note.size);
-    let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+fn add_note_ui(
+    ui: &mut egui::Ui,
+    note: &mut NoteData,
+    ui_state: &mut NoteUi,
+    board: &mut Board,
+    ev_plop: &mut EventWriter<PlayPlopEvent>,
+) {
+    // Allocate interaction area based on the original note size
+    let base_rect = Rect::from_min_size(note.pos, note.size);
+    let response = ui.allocate_rect(base_rect, egui::Sense::click_and_drag());
 
     if response.double_clicked() {
-        note.is_editing = true;
+        ui_state.is_editing = true;
     }
 
-    if note.is_editing {
+    if ui_state.is_editing {
         egui::Window::new(format!("edit_note_{}", note.id))
             .collapsible(false)
             .resizable(false)
@@ -239,14 +311,17 @@ fn add_note_ui(ui: &mut egui::Ui, note: &mut Note, ev_plop: &mut EventWriter<Pla
                         .desired_width(note.size.x - 10.0),
                 );
                 if ui.button("Done").clicked() {
-                    note.is_editing = false;
+                    ui_state.is_editing = false;
                 }
             });
+        if let Some(n) = board.notes.iter_mut().find(|n| n.id == note.id) {
+            n.text = note.text.clone();
+        }
         return;
     }
 
     if response.dragged() {
-        // Wiggle offset
+        // Wiggle offset combined with stretchy scaling for a satisfying drag
         let t = ui.ctx().input(|i| i.time as f32);
         let wiggle_amp = 3.0;
         let wiggle_off = wiggle_amp * (t * 15.0).sin();
@@ -254,24 +329,55 @@ fn add_note_ui(ui: &mut egui::Ui, note: &mut Note, ev_plop: &mut EventWriter<Pla
         let delta = response.drag_delta();
         note.pos.x += delta.x;
         note.pos.y += delta.y;
+        if let Some(n) = board.notes.iter_mut().find(|n| n.id == note.id) {
+            n.pos = note.pos;
+        }
 
         let snapped = snap_to_grid(note.pos);
         let preview_rect = Rect::from_min_size(snapped, note.size);
-        ui.painter().rect_stroke(preview_rect, 4.0, Stroke::new(1.0, Color32::LIGHT_GRAY));
+        ui.painter().rect_stroke(
+            preview_rect,
+            4.0,
+            Stroke::new(1.0, Color32::LIGHT_GRAY),
+            StrokeKind::Outside,
+        );
 
-        let wiggle_rect = rect.translate(egui::vec2(wiggle_off, 0.0));
-        ui.painter().rect_filled(wiggle_rect, 4.0, note.color);
+        // Update temporary scaling based on drag speed
+        let stretch_factor = 0.03;
+        let target_scale_x = 1.0 + delta.x.abs() * stretch_factor;
+        let target_scale_y = 1.0 + delta.y.abs() * stretch_factor;
+        ui_state.scale.x += (target_scale_x - ui_state.scale.x) * 0.5;
+        ui_state.scale.y += (target_scale_y - ui_state.scale.y) * 0.5;
+
+        let scaled_size = Vec2::new(
+            note.size.x * ui_state.scale.x,
+            note.size.y * ui_state.scale.y,
+        );
+        let mut drag_rect = Rect::from_min_size(note.pos, scaled_size);
+        drag_rect = drag_rect.translate(egui::vec2(wiggle_off, 0.0));
+
+        ui.painter().rect_filled(drag_rect, 4.0, note.color);
         ui.painter().text(
-            wiggle_rect.center(),
+            drag_rect.center(),
             egui::Align2::CENTER_CENTER,
             &note.text,
             egui::FontId::proportional(16.0),
             Color32::BLACK,
         );
     } else {
-        ui.painter().rect_filled(rect, 4.0, note.color);
+        // Gradually return to original scale when not dragging
+        ui_state.scale.x += (1.0 - ui_state.scale.x) * 0.2;
+        ui_state.scale.y += (1.0 - ui_state.scale.y) * 0.2;
+
+        let scaled_size = Vec2::new(
+            note.size.x * ui_state.scale.x,
+            note.size.y * ui_state.scale.y,
+        );
+        let display_rect = Rect::from_min_size(note.pos, scaled_size);
+
+        ui.painter().rect_filled(display_rect, 4.0, note.color);
         ui.painter().text(
-            rect.center(),
+            display_rect.center(),
             egui::Align2::CENTER_CENTER,
             &note.text,
             egui::FontId::proportional(16.0),
@@ -281,6 +387,9 @@ fn add_note_ui(ui: &mut egui::Ui, note: &mut Note, ev_plop: &mut EventWriter<Pla
 
     if response.drag_stopped() {
         note.pos = snap_to_grid(note.pos);
+        if let Some(n) = board.notes.iter_mut().find(|n| n.id == note.id) {
+            n.pos = note.pos;
+        }
         // Play sound when dragging stops
         ev_plop.write_default();
     }
@@ -291,6 +400,19 @@ fn setup_audio(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(AudioAssets {
         plop: asset_server.load("plop.wav"),
     });
+}
+
+// Spawn note entities from the loaded application state
+fn spawn_existing_notes(mut commands: Commands, app: Res<PostItData>) {
+    for board in app.state.boards.values() {
+        for note in &board.notes {
+            commands.spawn((
+                note.clone(),
+                NoteUi::default(),
+                BelongsToBoard(board.id),
+            ));
+        }
+    }
 }
 
 fn main() {
@@ -304,7 +426,7 @@ fn main() {
             // Default configuration
             enable_multipass_for_primary_context: false
         })
-        .add_systems(Startup, setup_audio)
+        .add_systems(Startup, (setup_audio, spawn_existing_notes))
         .add_systems(Update, (ui_system, play_plop_sound))
         .run();
 }
