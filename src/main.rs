@@ -288,11 +288,12 @@ fn add_note_ui(
         drag_rect = drag_rect.translate(egui::vec2(wiggle_off, 0.0));
 
         ui.painter().rect_filled(drag_rect, 4.0, note.color);
+        let font_size = fit_text_size(ui.ctx(), &note.text, scaled_size, 16.0);
         ui.painter().text(
             drag_rect.center(),
             egui::Align2::CENTER_CENTER,
             &note.text,
-            egui::FontId::proportional(16.0),
+            egui::FontId::proportional(font_size),
             Color32::BLACK,
         );
     } else {
@@ -307,11 +308,12 @@ fn add_note_ui(
         let display_rect = Rect::from_min_size(note.pos, scaled_size);
 
         ui.painter().rect_filled(display_rect, 4.0, note.color);
+        let font_size = fit_text_size(ui.ctx(), &note.text, scaled_size, 16.0);
         ui.painter().text(
             display_rect.center(),
             egui::Align2::CENTER_CENTER,
             &note.text,
-            egui::FontId::proportional(16.0),
+            egui::FontId::proportional(font_size),
             Color32::BLACK,
         );
     }
@@ -320,6 +322,21 @@ fn add_note_ui(
         // Play sound when dragging stops
         ev_plop.write_default();
     }
+}
+
+fn fit_text_size(ctx: &egui::Context, text: &str, max: Vec2, max_font: f32) -> f32 {
+    let mut size = max_font;
+    while size > 6.0 {
+        let text_size = ctx.fonts(|f| {
+            f.layout_no_wrap(text.to_string(), egui::FontId::proportional(size), Color32::BLACK)
+                .size()
+        });
+        if text_size.x <= max.x - 4.0 && text_size.y <= max.y - 4.0 {
+            break;
+        }
+        size -= 1.0;
+    }
+    size
 }
 
 // System to load audio assets at startup
