@@ -1,11 +1,20 @@
 use bevy::prelude::*;
 use bevy_egui::EguiContexts;
-use egui::{Color32, Pos2, Rect, Vec2};
+use egui::{Color32, Pos2, Rect, Vec2, Stroke};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     path::PathBuf,
 };
+
+const GRID_SIZE: f32 = 40.0;
+
+fn snap_to_grid(pos: Pos2) -> Pos2 {
+    Pos2 {
+        x: (pos.x / GRID_SIZE).round() * GRID_SIZE,
+        y: (pos.y / GRID_SIZE).round() * GRID_SIZE,
+    }
+}
 
 /// Single Post-It note
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -246,6 +255,10 @@ fn add_note_ui(ui: &mut egui::Ui, note: &mut Note, ev_plop: &mut EventWriter<Pla
         note.pos.x += delta.x;
         note.pos.y += delta.y;
 
+        let snapped = snap_to_grid(note.pos);
+        let preview_rect = Rect::from_min_size(snapped, note.size);
+        ui.painter().rect_stroke(preview_rect, 4.0, Stroke::new(1.0, Color32::LIGHT_GRAY));
+
         let wiggle_rect = rect.translate(egui::vec2(wiggle_off, 0.0));
         ui.painter().rect_filled(wiggle_rect, 4.0, note.color);
         ui.painter().text(
@@ -267,6 +280,7 @@ fn add_note_ui(ui: &mut egui::Ui, note: &mut Note, ev_plop: &mut EventWriter<Pla
     }
 
     if response.drag_stopped() {
+        note.pos = snap_to_grid(note.pos);
         // Play sound when dragging stops
         ev_plop.write_default();
     }
