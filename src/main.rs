@@ -1,22 +1,22 @@
 use bevy::prelude::*;
 use bevy_egui::EguiContexts;
-use egui::{Color32, Pos2, Rect, Vec2};
-use std::path::PathBuf;
+use egui::{Color32, Pos2, Rect, Shape, Stroke, Vec2};
 use plop::{AppState, Board, NoteData};
+use std::path::PathBuf;
 
 /// Runtime UI state for a note
 #[derive(Component)]
 struct NoteUi {
     is_editing: bool,
-    /// Current scaling applied while dragging for squishy effect
-    scale: Vec2,
+    /// Current skew applied while dragging for a leaning effect
+    skew: Vec2,
 }
 
 impl Default for NoteUi {
     fn default() -> Self {
         Self {
             is_editing: false,
-            scale: Vec2::new(1.0, 1.0),
+            skew: Vec2::ZERO,
         }
     }
 }
@@ -47,10 +47,7 @@ impl Default for PostItData {
         // Load existing state or start fresh
         let state = AppState::load_from_file(&save_path);
 
-        Self {
-            state,
-            save_path,
-        }
+        Self { state, save_path }
     }
 }
 
@@ -82,7 +79,7 @@ fn ui_system(
     mut notes: Query<(Entity, &mut NoteData, &mut NoteUi, &BelongsToBoard)>,
 ) {
     let ctx = contexts.ctx_mut();
-    
+
     egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
         ui.horizontal(|ui| {
             // Button: Add new board
@@ -123,11 +120,7 @@ fn ui_system(
                 // Spawn notes from loaded state
                 for board in app.state.boards.values() {
                     for note in &board.notes {
-                        commands.spawn((
-                            note.clone(),
-                            NoteUi::default(),
-                            BelongsToBoard(board.id),
-                        ));
+                        commands.spawn((note.clone(), NoteUi::default(), BelongsToBoard(board.id)));
                     }
                 }
             }
@@ -192,22 +185,29 @@ fn board_ui_system(
     // Allocate the whole available space for our board area
     let board_rect = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(board_rect, egui::Sense::click_and_drag());
-    
+
     // Paint the background
     ui.painter().rect_filled(board_rect, 0.0, board.background);
-    
+
     // Render existing notes from ECS
     for (_, mut note, mut ui_state, belongs) in notes.iter_mut() {
         if belongs.0 == board_id {
             add_note_ui(ui, &mut note, &mut ui_state, board, ev_plop);
         }
     }
-    
+
     // If user right-clicks on the board, add new note
-    if response.hovered() && ui.ctx().input(|i| i.pointer.button_released(egui::PointerButton::Secondary)) {
+    if response.hovered()
+        && ui
+            .ctx()
+            .input(|i| i.pointer.button_released(egui::PointerButton::Secondary))
+    {
         let id = *next_note_id;
         *next_note_id += 1;
-        let pointer_pos = ui.ctx().pointer_hover_pos().unwrap_or(Pos2 { x: 0.0, y: 0.0 });
+        let pointer_pos = ui
+            .ctx()
+            .pointer_hover_pos()
+            .unwrap_or(Pos2 { x: 0.0, y: 0.0 });
         let data = NoteData {
             id,
             text: "New note".into(),
@@ -246,10 +246,7 @@ fn add_note_ui(
             .title_bar(false)
             .fixed_pos(note.pos)
             .show(ui.ctx(), |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(&mut note.text)
-                        .desired_width(note.size.x - 10.0),
-                );
+                ui.add(egui::TextEdit::multiline(&mut note.text).desired_width(note.size.x - 10.0));
                 if ui.button("Done").clicked() {
                     ui_state.is_editing = false;
                 }
@@ -273,42 +270,86 @@ fn add_note_ui(
             n.pos = note.pos;
         }
 
-        // Update temporary scaling based on drag speed
-        let stretch_factor = 0.03;
-        let target_scale_x = 1.0 + delta.x.abs() * stretch_factor;
-        let target_scale_y = 1.0 + delta.y.abs() * stretch_factor;
-        ui_state.scale.x += (target_scale_x - ui_state.scale.x) * 0.5;
-        ui_state.scale.y += (target_scale_y - ui_state.scale.y) * 0.5;
+        // Update temporary skew based on drag speed
+        let skew_factor = 0.02;
+        let target_skew_x = delta.x * skew_factor;
+        let target_skew_y = delta.y * skew_factor;
+        ui_state.skew.x += (target_skew_x - ui_state.skew.x) * 0.5;
+        ui_state.skew.y += (target_skew_y - ui_state.skew.y) * 0.5;
 
-        let scaled_size = Vec2::new(
-            note.size.x * ui_state.scale.x,
-            note.size.y * ui_state.scale.y,
+        let w = note.size.x;
+        let h = note.size.y;
+        let sx = ui_state.skew.x;
+        let sy = ui_state.skew.y;
+        let off = egui::vec2(wiggle_off, 0.0);
+
+        let p1 = note.pos + off;
+        let p2 = Pos2 {
+            x: note.pos.x + w + off.x,
+            y: note.pos.y + w * sy + off.y,
+        };
+        let p3 = Pos2 {
+            x: note.pos.x + w + h * sx + off.x,
+            y: note.pos.y + h + w * sy + off.y,
+        };
+        let p4 = Pos2 {
+            x: note.pos.x + h * sx + off.x,
+            y: note.pos.y + h + off.y,
+        };
+
+        let center = Pos2::new(
+            (p1.x + p2.x + p3.x + p4.x) / 4.0,
+            (p1.y + p2.y + p3.y + p4.y) / 4.0,
         );
-        let mut drag_rect = Rect::from_min_size(note.pos, scaled_size);
-        drag_rect = drag_rect.translate(egui::vec2(wiggle_off, 0.0));
 
-        ui.painter().rect_filled(drag_rect, 4.0, note.color);
+        ui.painter().add(Shape::convex_polygon(
+            vec![p1, p2, p3, p4],
+            note.color,
+            Stroke::NONE,
+        ));
         ui.painter().text(
-            drag_rect.center(),
+            center,
             egui::Align2::CENTER_CENTER,
             &note.text,
             egui::FontId::proportional(16.0),
             Color32::BLACK,
         );
     } else {
-        // Gradually return to original scale when not dragging
-        ui_state.scale.x += (1.0 - ui_state.scale.x) * 0.2;
-        ui_state.scale.y += (1.0 - ui_state.scale.y) * 0.2;
+        // Gradually return to no skew when not dragging
+        ui_state.skew.x += (0.0 - ui_state.skew.x) * 0.2;
+        ui_state.skew.y += (0.0 - ui_state.skew.y) * 0.2;
 
-        let scaled_size = Vec2::new(
-            note.size.x * ui_state.scale.x,
-            note.size.y * ui_state.scale.y,
+        let w = note.size.x;
+        let h = note.size.y;
+        let sx = ui_state.skew.x;
+        let sy = ui_state.skew.y;
+
+        let p1 = note.pos;
+        let p2 = Pos2 {
+            x: note.pos.x + w,
+            y: note.pos.y + w * sy,
+        };
+        let p3 = Pos2 {
+            x: note.pos.x + w + h * sx,
+            y: note.pos.y + h + w * sy,
+        };
+        let p4 = Pos2 {
+            x: note.pos.x + h * sx,
+            y: note.pos.y + h,
+        };
+
+        let center = Pos2::new(
+            (p1.x + p2.x + p3.x + p4.x) / 4.0,
+            (p1.y + p2.y + p3.y + p4.y) / 4.0,
         );
-        let display_rect = Rect::from_min_size(note.pos, scaled_size);
 
-        ui.painter().rect_filled(display_rect, 4.0, note.color);
+        ui.painter().add(Shape::convex_polygon(
+            vec![p1, p2, p3, p4],
+            note.color,
+            Stroke::NONE,
+        ));
         ui.painter().text(
-            display_rect.center(),
+            center,
             egui::Align2::CENTER_CENTER,
             &note.text,
             egui::FontId::proportional(16.0),
@@ -333,11 +374,7 @@ fn setup_audio(mut commands: Commands, asset_server: Res<AssetServer>) {
 fn spawn_existing_notes(mut commands: Commands, app: Res<PostItData>) {
     for board in app.state.boards.values() {
         for note in &board.notes {
-            commands.spawn((
-                note.clone(),
-                NoteUi::default(),
-                BelongsToBoard(board.id),
-            ));
+            commands.spawn((note.clone(), NoteUi::default(), BelongsToBoard(board.id)));
         }
     }
 }
@@ -351,7 +388,7 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugins(bevy_egui::EguiPlugin {
             // Default configuration
-            enable_multipass_for_primary_context: false
+            enable_multipass_for_primary_context: false,
         })
         .add_systems(Startup, (setup_audio, spawn_existing_notes))
         .add_systems(Update, (ui_system, play_plop_sound))
