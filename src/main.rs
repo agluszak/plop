@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::EguiContexts;
 use egui::{Color32, Pos2, Rect, Shape, Stroke, Vec2};
-use plop::{AppState, Board, NoteData};
+use plop::{AppState, Board, NoteData, snap_to_grid};
 use std::path::PathBuf;
 
 /// Runtime UI state for a note
@@ -29,6 +29,16 @@ struct BelongsToBoard(u64);
 #[derive(Resource)]
 struct AudioAssets {
     plop: Handle<AudioSource>,
+}
+
+/// Grid size controlling note alignment
+#[derive(Resource)]
+struct GridSize(f32);
+
+impl Default for GridSize {
+    fn default() -> Self {
+        Self(50.0)
+    }
 }
 
 // Bevy resource to hold our app state
@@ -76,6 +86,7 @@ fn ui_system(
     mut contexts: EguiContexts,
     mut active_board: ResMut<ActiveBoard>,
     mut ev_plop: EventWriter<PlayPlopEvent>,
+    grid: Res<GridSize>,
     mut notes: Query<(Entity, &mut NoteData, &mut NoteUi, &BelongsToBoard)>,
 ) {
     let ctx = contexts.ctx_mut();
@@ -160,6 +171,7 @@ fn ui_system(
                     &mut next_id,
                     &mut notes,
                     &mut commands,
+                    &grid,
                     &mut ev_plop,
                 );
             }
@@ -180,6 +192,7 @@ fn board_ui_system(
     next_note_id: &mut u64,
     notes: &mut Query<(Entity, &mut NoteData, &mut NoteUi, &BelongsToBoard)>,
     commands: &mut Commands,
+    grid: &GridSize,
     ev_plop: &mut EventWriter<PlayPlopEvent>,
 ) {
     // Allocate the whole available space for our board area
@@ -192,7 +205,7 @@ fn board_ui_system(
     // Render existing notes from ECS
     for (_, mut note, mut ui_state, belongs) in notes.iter_mut() {
         if belongs.0 == board_id {
-            add_note_ui(ui, &mut note, &mut ui_state, board, ev_plop);
+            add_note_ui(ui, &mut note, &mut ui_state, board, grid.0, ev_plop);
         }
     }
 
@@ -211,7 +224,7 @@ fn board_ui_system(
         let data = NoteData {
             id,
             text: "New note".into(),
-            pos: pointer_pos,
+            pos: snap_to_grid(pointer_pos, grid.0),
             size: Vec2 { x: 120.0, y: 80.0 },
             color: Color32::YELLOW,
         };
@@ -229,6 +242,7 @@ fn add_note_ui(
     note: &mut NoteData,
     ui_state: &mut NoteUi,
     board: &mut Board,
+    grid_size: f32,
     ev_plop: &mut EventWriter<PlayPlopEvent>,
 ) {
     // Allocate interaction area based on the original note size
@@ -314,6 +328,16 @@ fn add_note_ui(
             egui::FontId::proportional(16.0),
             Color32::BLACK,
         );
+
+        // Draw preview of snapped position
+        let snapped = snap_to_grid(note.pos, grid_size);
+        let preview = Rect::from_min_size(snapped, note.size);
+        ui.painter().rect_stroke(
+            preview,
+            0.0,
+            Stroke::new(1.0, Color32::WHITE),
+            egui::StrokeKind::Inside,
+        );
     } else {
         // Gradually return to no skew when not dragging
         ui_state.skew.x += (0.0 - ui_state.skew.x) * 0.2;
@@ -358,6 +382,10 @@ fn add_note_ui(
     }
 
     if response.drag_stopped() {
+        note.pos = snap_to_grid(note.pos, grid_size);
+        if let Some(n) = board.notes.iter_mut().find(|n| n.id == note.id) {
+            n.pos = note.pos;
+        }
         // Play sound when dragging stops
         ev_plop.write_default();
     }
@@ -383,6 +411,7 @@ fn main() {
     App::new()
         .insert_resource(ClearColor(Color::srgb(0.1, 0.1, 0.1)))
         .init_resource::<PostItData>()
+        .init_resource::<GridSize>()
         .insert_resource(ActiveBoard(None))
         .add_event::<PlayPlopEvent>()
         .add_plugins(DefaultPlugins)

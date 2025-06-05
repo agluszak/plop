@@ -51,11 +51,16 @@ impl AppState {
     }
 }
 
+/// Snap a `Pos2` to the nearest grid cell defined by `grid`.
+pub fn snap_to_grid(pos: Pos2, grid: f32) -> Pos2 {
+    Pos2::new((pos.x / grid).round() * grid, (pos.y / grid).round() * grid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
     use std::fs;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn save_and_load_roundtrip() {
@@ -128,5 +133,11 @@ mod tests {
         assert_eq!(loaded.boards.get(&1).unwrap().notes[0].text, "edited");
         assert_eq!(loaded, state);
     }
-}
 
+    #[test]
+    fn snap_to_grid_rounds_position() {
+        let pos = Pos2 { x: 27.0, y: 73.0 };
+        let snapped = snap_to_grid(pos, 50.0);
+        assert_eq!(snapped, Pos2 { x: 50.0, y: 50.0 });
+    }
+}
