@@ -1,21 +1,8 @@
 use bevy::prelude::*;
 use bevy_egui::EguiContexts;
 use egui::{Color32, Pos2, Rect, Vec2};
-use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-};
-
-/// Data for a single Post-It note
-#[derive(Component, Serialize, Deserialize, Debug, Clone)]
-struct NoteData {
-    id: u64,
-    text: String,
-    pos: Pos2,
-    size: Vec2,
-    color: Color32,
-}
+use std::path::PathBuf;
+use plop::{AppState, Board, NoteData};
 
 /// Runtime UI state for a note
 #[derive(Component)]
@@ -37,44 +24,6 @@ impl Default for NoteUi {
 /// Tag component to associate a note entity with a board
 #[derive(Component)]
 struct BelongsToBoard(u64);
-
-/// Virtual board containing multiple notes
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct Board {
-    id: u64,
-    name: String,
-    background: Color32,
-    notes: Vec<NoteData>,
-    scene_rect: Rect,
-}
-
-/// Global application state
-#[derive(Serialize, Deserialize, Debug, Default)]
-struct AppState {
-    boards: HashMap<u64, Board>,
-    current_board: Option<u64>,
-    next_note_id: u64,
-    next_board_id: u64,
-}
-
-impl AppState {
-    /// Save to JSON file
-    fn save_to_file(&self, path: &PathBuf) {
-        if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(path, json);
-        }
-    }
-
-    /// Load from JSON file
-    fn load_from_file(path: &PathBuf) -> Self {
-        if let Ok(data) = std::fs::read_to_string(path) {
-            if let Ok(state) = serde_json::from_str(&data) {
-                return state;
-            }
-        }
-        AppState::default()
-    }
-}
 
 // Audio resource to play the plop sound
 #[derive(Resource)]
