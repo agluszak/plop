@@ -70,6 +70,22 @@ fn play_plop_sound(
     }
 }
 
+/// Calculate a font size so the text fits inside the note rectangle
+fn fitted_font_size(ctx: &egui::Context, text: &str, max: Vec2, start: f32) -> f32 {
+    let mut size = start;
+    let margin = 8.0;
+    while size > 6.0 {
+        let font_id = egui::FontId::proportional(size);
+        let galley = ctx.fonts(|f| f.layout_no_wrap(text.to_owned(), font_id, Color32::BLACK));
+        let text_size = galley.size();
+        if text_size.x <= max.x - margin && text_size.y <= max.y - margin {
+            break;
+        }
+        size -= 1.0;
+    }
+    size.max(6.0)
+}
+
 fn ui_system(
     mut commands: Commands,
     mut app: ResMut<PostItData>,
@@ -307,11 +323,12 @@ fn add_note_ui(
             note.color,
             Stroke::NONE,
         ));
+        let font_size = fitted_font_size(ui.ctx(), &note.text, note.size, 16.0);
         ui.painter().text(
             center,
             egui::Align2::CENTER_CENTER,
             &note.text,
-            egui::FontId::proportional(16.0),
+            egui::FontId::proportional(font_size),
             Color32::BLACK,
         );
     } else {
@@ -348,11 +365,12 @@ fn add_note_ui(
             note.color,
             Stroke::NONE,
         ));
+        let font_size = fitted_font_size(ui.ctx(), &note.text, note.size, 16.0);
         ui.painter().text(
             center,
             egui::Align2::CENTER_CENTER,
             &note.text,
-            egui::FontId::proportional(16.0),
+            egui::FontId::proportional(font_size),
             Color32::BLACK,
         );
     }
