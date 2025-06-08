@@ -73,6 +73,45 @@ struct PlayPlopEvent;
 #[derive(Resource)]
 struct ActiveBoard(Option<u64>);
 
+#[derive(Resource, Default)]
+struct SearchState {
+    query: String,
+    matches: Vec<(u64, u64)>, // (board_id, note_id)
+    current: usize,
+}
+
+fn update_search(app: &PostItData, search: &mut SearchState) {
+    search.matches.clear();
+    if search.query.is_empty() {
+        return;
+    }
+    let q = search.query.to_lowercase();
+    for (bid, board) in &app.state.boards {
+        for note in &board.notes {
+            if note.text.to_lowercase().contains(&q) {
+                search.matches.push((*bid, note.id));
+            }
+        }
+    }
+    search.current = 0;
+}
+
+fn focus_on_match(app: &mut PostItData, search: &SearchState, active_board: &mut ActiveBoard) {
+    if let Some(&(bid, nid)) = search.matches.get(search.current) {
+        active_board.0 = Some(bid);
+        app.state.current_board = Some(bid);
+        if let Some(board) = app.state.boards.get_mut(&bid) {
+            if let Some(note) = board.notes.iter().find(|n| n.id == nid) {
+                let center = Pos2::new(
+                    note.pos.x + note.size.x / 2.0,
+                    note.pos.y + note.size.y / 2.0,
+                );
+                board.scene_rect = Rect::from_center_size(center, board.scene_rect.size());
+            }
+        }
+    }
+}
+
 // System to handle plop sound events
 fn play_plop_sound(
     audio_assets: Res<AudioAssets>,
@@ -109,6 +148,30 @@ fn fitted_font_size(ctx: &egui::Context, text: &str, max: Vec2, start: f32) -> f
     size.max(6.0)
 }
 
+fn highlighted_layout(text: &str, query: &str, font_size: f32) -> egui::text::LayoutJob {
+    use egui::text::{LayoutJob, TextFormat};
+    let mut job = LayoutJob::default();
+    let normal = TextFormat::simple(egui::FontId::proportional(font_size), Color32::BLACK);
+    let mut highlight = normal.clone();
+    highlight.background = Color32::LIGHT_RED;
+    let text_lower = text.to_lowercase();
+    let query_lower = query.to_lowercase();
+    let mut i = 0;
+    while let Some(pos) = text_lower[i..].find(&query_lower) {
+        let start = i + pos;
+        if start > i {
+            job.append(&text[i..start], 0.0, normal.clone());
+        }
+        let end = start + query.len();
+        job.append(&text[start..end], 0.0, highlight.clone());
+        i = end;
+    }
+    if i < text.len() {
+        job.append(&text[i..], 0.0, normal);
+    }
+    job
+}
+
 fn ui_system(
     mut commands: Commands,
     mut app: ResMut<PostItData>,
@@ -117,6 +180,7 @@ fn ui_system(
     mut ev_plop: EventWriter<PlayPlopEvent>,
     grid: Res<GridSize>,
     mut notes: Query<(Entity, &mut NoteData, &mut NoteUi, &BelongsToBoard)>,
+    mut search: ResMut<SearchState>,
 ) {
     let ctx = contexts.ctx_mut();
 
@@ -186,6 +250,26 @@ fn ui_system(
                 app.state.current_board = Some(selection);
                 active_board.0 = Some(selection);
             }
+
+            ui.separator();
+            ui.label("Search:");
+            let changed = ui.text_edit_singleline(&mut search.query).changed();
+            if changed {
+                update_search(&app, &mut search);
+                focus_on_match(&mut app, &search, &mut active_board);
+            }
+            if ui.button("Prev").clicked() && !search.matches.is_empty() {
+                if search.current == 0 {
+                    search.current = search.matches.len() - 1;
+                } else {
+                    search.current -= 1;
+                }
+                focus_on_match(&mut app, &search, &mut active_board);
+            }
+            if ui.button("Next").clicked() && !search.matches.is_empty() {
+                search.current = (search.current + 1) % search.matches.len();
+                focus_on_match(&mut app, &search, &mut active_board);
+            }
         });
     });
 
@@ -193,6 +277,10 @@ fn ui_system(
         if let Some(board_id) = active_board.0 {
             let mut next_id = app.state.next_note_id;
             if let Some(board) = app.state.boards.get_mut(&board_id) {
+                let highlight = search
+                    .matches
+                    .get(search.current)
+                    .and_then(|(bid, nid)| if *bid == board_id { Some(*nid) } else { None });
                 board_ui_system(
                     ui,
                     board,
@@ -202,6 +290,8 @@ fn ui_system(
                     &mut commands,
                     &grid,
                     &mut ev_plop,
+                    &search.query,
+                    highlight,
                 );
             }
             app.state.next_note_id = next_id;
@@ -223,6 +313,8 @@ fn board_ui_system(
     commands: &mut Commands,
     grid: &GridSize,
     ev_plop: &mut EventWriter<PlayPlopEvent>,
+    query: &str,
+    highlight_note: Option<u64>,
 ) {
     // Zoomable + draggable scene
     let scene = Scene::new()
@@ -237,7 +329,20 @@ fn board_ui_system(
             // Render existing notes from ECS
             for (_, mut note, mut ui_state, belongs) in notes.iter_mut() {
                 if belongs.0 == board_id {
-                    add_note_ui(ui, &mut note, &mut ui_state, board, grid.0, ev_plop);
+                    let highlight = highlight_note == Some(note.id);
+                    let has_query = !query.is_empty()
+                        && note.text.to_lowercase().contains(&query.to_lowercase());
+                    add_note_ui(
+                        ui,
+                        &mut note,
+                        &mut ui_state,
+                        board,
+                        grid.0,
+                        ev_plop,
+                        query,
+                        has_query,
+                        highlight,
+                    );
                 }
             }
         })
@@ -279,6 +384,9 @@ fn add_note_ui(
     board: &mut Board,
     grid_size: f32,
     ev_plop: &mut EventWriter<PlayPlopEvent>,
+    query: &str,
+    highlight_match: bool,
+    active: bool,
 ) {
     // Allocate interaction area based on the original note size
     let base_rect = Rect::from_min_size(note.pos, note.size);
@@ -357,13 +465,20 @@ fn add_note_ui(
             Stroke::NONE,
         ));
         let font_size = fitted_font_size(ui.ctx(), &note.text, note.size, 16.0);
-        ui.painter().text(
-            center,
-            egui::Align2::CENTER_CENTER,
-            &note.text,
-            egui::FontId::proportional(font_size),
-            Color32::BLACK,
-        );
+        if highlight_match {
+            let job = highlighted_layout(&note.text, query, font_size);
+            let galley = ui.painter().layout_job(job);
+            ui.painter()
+                .galley(center - galley.size() * 0.5, galley, Color32::BLACK);
+        } else {
+            ui.painter().text(
+                center,
+                egui::Align2::CENTER_CENTER,
+                &note.text,
+                egui::FontId::proportional(font_size),
+                Color32::BLACK,
+            );
+        }
 
         // Draw preview of snapped position
         let snapped = snap_to_grid(note.pos, grid_size);
@@ -409,12 +524,33 @@ fn add_note_ui(
             Stroke::NONE,
         ));
         let font_size = fitted_font_size(ui.ctx(), &note.text, note.size, 16.0);
-        ui.painter().text(
-            center,
-            egui::Align2::CENTER_CENTER,
-            &note.text,
-            egui::FontId::proportional(font_size),
-            Color32::BLACK,
+        if highlight_match {
+            let job = highlighted_layout(&note.text, query, font_size);
+            let galley = ui.painter().layout_job(job);
+            ui.painter()
+                .galley(center - galley.size() * 0.5, galley, Color32::BLACK);
+        } else {
+            ui.painter().text(
+                center,
+                egui::Align2::CENTER_CENTER,
+                &note.text,
+                egui::FontId::proportional(font_size),
+                Color32::BLACK,
+            );
+        }
+    }
+
+    if highlight_match {
+        let stroke = if active {
+            Stroke::new(3.0, Color32::RED)
+        } else {
+            Stroke::new(2.0, Color32::LIGHT_RED)
+        };
+        ui.painter().rect_stroke(
+            Rect::from_min_size(note.pos, note.size),
+            0.0,
+            stroke,
+            egui::StrokeKind::Inside,
         );
     }
 
@@ -466,6 +602,7 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.1, 0.1, 0.1)))
         .init_resource::<PostItData>()
         .init_resource::<GridSize>()
+        .init_resource::<SearchState>()
         .insert_resource(ActiveBoard(None))
         .add_event::<PlayPlopEvent>()
         .add_plugins(EntropyPlugin::<WyRand>::default())
