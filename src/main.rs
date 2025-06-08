@@ -1,12 +1,12 @@
 use bevy::app::AppExit;
-use bevy::prelude::*;
 use bevy::audio::{PlaybackSettings, Volume};
+use bevy::prelude::*;
 use bevy_egui::EguiContexts;
 use bevy_prng::WyRand;
 use bevy_rand::prelude::*;
+use egui::{Color32, Pos2, Rect, Shape, Stroke, Vec2, containers::Scene};
+use plop::{AppState, Board, NoteData, snap_to_grid};
 use rand::Rng;
-use egui::{Color32, Pos2, Rect, Shape, Stroke, Vec2};
-use plop::{snap_to_grid, AppState, Board, NoteData};
 use std::path::PathBuf;
 
 /// Runtime UI state for a note
@@ -131,7 +131,7 @@ fn ui_system(
                     name: format!("Board {}", id),
                     background: Color32::LIGHT_BLUE,
                     notes: Vec::new(),
-                    scene_rect: Rect::ZERO,
+                    scene_rect: Rect::from_min_size(Pos2::ZERO, Vec2::splat(1000.0)),
                 };
                 app.state.current_board = Some(id);
                 active_board.0 = Some(id);
@@ -224,19 +224,25 @@ fn board_ui_system(
     grid: &GridSize,
     ev_plop: &mut EventWriter<PlayPlopEvent>,
 ) {
-    // Allocate the whole available space for our board area
-    let board_rect = ui.available_rect_before_wrap();
-    let response = ui.allocate_rect(board_rect, egui::Sense::click_and_drag());
+    // Zoomable + draggable scene
+    let scene = Scene::new()
+        .zoom_range(0.1..=5.0)
+        .max_inner_size(Vec2::splat(5000.0));
+    let mut scene_rect = board.scene_rect;
+    let response = scene
+        .show(ui, &mut scene_rect, |ui| {
+            ui.painter()
+                .rect_filled(ui.max_rect(), 0.0, board.background);
 
-    // Paint the background
-    ui.painter().rect_filled(board_rect, 0.0, board.background);
-
-    // Render existing notes from ECS
-    for (_, mut note, mut ui_state, belongs) in notes.iter_mut() {
-        if belongs.0 == board_id {
-            add_note_ui(ui, &mut note, &mut ui_state, board, grid.0, ev_plop);
-        }
-    }
+            // Render existing notes from ECS
+            for (_, mut note, mut ui_state, belongs) in notes.iter_mut() {
+                if belongs.0 == board_id {
+                    add_note_ui(ui, &mut note, &mut ui_state, board, grid.0, ev_plop);
+                }
+            }
+        })
+        .response;
+    board.scene_rect = scene_rect;
 
     // If user right-clicks on the board, add new note
     if response.hovered()
