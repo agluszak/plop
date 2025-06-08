@@ -335,12 +335,17 @@ fn add_note_ui(
             .fixed_pos(note.pos)
             .show(ui.ctx(), |ui| {
                 ui.add(egui::TextEdit::multiline(&mut note.text).desired_width(note.size.x - 10.0));
+                ui.horizontal(|ui| {
+                    ui.label("Color:");
+                    ui.color_edit_button_srgba(&mut note.color);
+                });
                 if ui.button("Done").clicked() {
                     ui_state.is_editing = false;
                 }
             });
         if let Some(n) = board.notes.iter_mut().find(|n| n.id == note.id) {
             n.text = note.text.clone();
+            n.color = note.color;
         }
         return;
     }
