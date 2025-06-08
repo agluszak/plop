@@ -1,6 +1,10 @@
 use bevy::app::AppExit;
 use bevy::prelude::*;
+use bevy::audio::{PlaybackSettings, Volume};
 use bevy_egui::EguiContexts;
+use bevy_prng::WyRand;
+use bevy_rand::prelude::*;
+use rand::Rng;
 use egui::{Color32, Pos2, Rect, Shape, Stroke, Vec2};
 use plop::{snap_to_grid, AppState, Board, NoteData};
 use std::path::PathBuf;
@@ -74,10 +78,18 @@ fn play_plop_sound(
     audio_assets: Res<AudioAssets>,
     mut commands: Commands,
     mut events: EventReader<PlayPlopEvent>,
+    mut rng: GlobalEntropy<WyRand>,
 ) {
     for _ in events.read() {
-        // Play sound with Bevy's audio systems
-        commands.spawn(AudioPlayer::new(audio_assets.plop.clone()));
+        // Randomize speed and volume slightly for variety
+        let speed = rng.gen_range(0.9..=1.1);
+        let volume = rng.gen_range(0.8..=1.2);
+        commands.spawn((
+            AudioPlayer::new(audio_assets.plop.clone()),
+            PlaybackSettings::DESPAWN
+                .with_speed(speed)
+                .with_volume(Volume::Linear(volume)),
+        ));
     }
 }
 
@@ -450,6 +462,7 @@ fn main() {
         .init_resource::<GridSize>()
         .insert_resource(ActiveBoard(None))
         .add_event::<PlayPlopEvent>()
+        .add_plugins(EntropyPlugin::<WyRand>::default())
         .add_plugins(DefaultPlugins)
         .add_plugins(bevy_egui::EguiPlugin {
             // Default configuration
