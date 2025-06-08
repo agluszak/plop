@@ -1,7 +1,7 @@
 use bevy::prelude::Component;
 use egui::{Color32, Pos2, Rect, Vec2};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 /// Data for a single Post-It note
 #[derive(Component, Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -23,13 +23,26 @@ pub struct Board {
     pub scene_rect: Rect,
 }
 
-/// Global application state
-#[derive(Serialize, Deserialize, Debug, Default, PartialEq)]
+/// Global application state containing a single board
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct AppState {
-    pub boards: HashMap<u64, Board>,
-    pub current_board: Option<u64>,
+    pub board: Board,
     pub next_note_id: u64,
-    pub next_board_id: u64,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            board: Board {
+                id: 1,
+                name: "Board".into(),
+                background: Color32::LIGHT_BLUE,
+                notes: Vec::new(),
+                scene_rect: Rect::from_min_size(Pos2::ZERO, Vec2::ZERO),
+            },
+            next_note_id: 1,
+        }
+    }
 }
 
 impl AppState {
@@ -78,8 +91,7 @@ mod tests {
             }],
             scene_rect: Rect::from_min_size(Pos2::ZERO, Vec2::ZERO),
         };
-        state.current_board = Some(1);
-        state.boards.insert(1, board);
+        state.board = board;
 
         let file = NamedTempFile::new().unwrap();
         let path = file.path().to_path_buf();
@@ -123,14 +135,13 @@ mod tests {
             scene_rect: Rect::from_min_size(Pos2::ZERO, Vec2::ZERO),
         };
         board.notes[0].text = "edited".into();
-        state.boards.insert(1, board.clone());
-        state.current_board = Some(1);
+        state.board = board.clone();
 
         let file = NamedTempFile::new().unwrap();
         let path = file.path().to_path_buf();
         state.save_to_file(&path);
         let loaded = AppState::load_from_file(&path);
-        assert_eq!(loaded.boards.get(&1).unwrap().notes[0].text, "edited");
+        assert_eq!(loaded.board.notes[0].text, "edited");
         assert_eq!(loaded, state);
     }
 

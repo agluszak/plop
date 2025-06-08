@@ -26,9 +26,6 @@ impl Default for NoteUi {
     }
 }
 
-/// Tag component to associate a note entity with a board
-#[derive(Component)]
-struct BelongsToBoard(u64);
 
 // Audio resource to play the plop sound
 #[derive(Resource)]
@@ -70,13 +67,10 @@ impl Default for PostItData {
 #[derive(Event, Default)]
 struct PlayPlopEvent;
 
-#[derive(Resource)]
-struct ActiveBoard(Option<u64>);
-
 #[derive(Resource, Default)]
 struct SearchState {
     query: String,
-    matches: Vec<(u64, u64)>, // (board_id, note_id)
+    matches: Vec<u64>, // note_id
     current: usize,
 }
 
@@ -86,28 +80,23 @@ fn update_search(app: &PostItData, search: &mut SearchState) {
         return;
     }
     let q = search.query.to_lowercase();
-    for (bid, board) in &app.state.boards {
-        for note in &board.notes {
-            if note.text.to_lowercase().contains(&q) {
-                search.matches.push((*bid, note.id));
-            }
+    for note in &app.state.board.notes {
+        if note.text.to_lowercase().contains(&q) {
+            search.matches.push(note.id);
         }
     }
     search.current = 0;
 }
 
-fn focus_on_match(app: &mut PostItData, search: &SearchState, active_board: &mut ActiveBoard) {
-    if let Some(&(bid, nid)) = search.matches.get(search.current) {
-        active_board.0 = Some(bid);
-        app.state.current_board = Some(bid);
-        if let Some(board) = app.state.boards.get_mut(&bid) {
-            if let Some(note) = board.notes.iter().find(|n| n.id == nid) {
-                let center = Pos2::new(
-                    note.pos.x + note.size.x / 2.0,
-                    note.pos.y + note.size.y / 2.0,
-                );
-                board.scene_rect = Rect::from_center_size(center, board.scene_rect.size());
-            }
+fn focus_on_match(app: &mut PostItData, search: &SearchState) {
+    if let Some(&nid) = search.matches.get(search.current) {
+        if let Some(note) = app.state.board.notes.iter().find(|n| n.id == nid) {
+            let center = Pos2::new(
+                note.pos.x + note.size.x / 2.0,
+                note.pos.y + note.size.y / 2.0,
+            );
+            app.state.board.scene_rect =
+                Rect::from_center_size(center, app.state.board.scene_rect.size());
         }
     }
 }
@@ -176,79 +165,36 @@ fn ui_system(
     mut commands: Commands,
     mut app: ResMut<PostItData>,
     mut contexts: EguiContexts,
-    mut active_board: ResMut<ActiveBoard>,
     mut ev_plop: EventWriter<PlayPlopEvent>,
     grid: Res<GridSize>,
-    mut notes: Query<(Entity, &mut NoteData, &mut NoteUi, &BelongsToBoard)>,
+    mut notes: Query<(Entity, &mut NoteData, &mut NoteUi)>,
     mut search: ResMut<SearchState>,
 ) {
     let ctx = contexts.ctx_mut();
 
     egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
         ui.horizontal(|ui| {
-            // Button: Add new board
-            if ui.button("New Board").clicked() {
-                let id = app.state.next_board_id;
-                app.state.next_board_id += 1;
-                let board = Board {
-                    id,
-                    name: format!("Board {}", id),
-                    background: Color32::LIGHT_BLUE,
-                    notes: Vec::new(),
-                    scene_rect: Rect::from_min_size(Pos2::ZERO, Vec2::splat(1000.0)),
-                };
-                app.state.current_board = Some(id);
-                active_board.0 = Some(id);
-                app.state.boards.insert(id, board);
-            }
-
             // Save/Load controls
             if ui.button("Save").clicked() {
                 // Sync notes from ECS into the app state before saving
-                for (_, note, _, belongs) in notes.iter_mut() {
-                    if let Some(board) = app.state.boards.get_mut(&belongs.0) {
-                        if let Some(n) = board.notes.iter_mut().find(|n| n.id == note.id) {
-                            *n = note.clone();
-                        }
+                for (_, note, _) in notes.iter_mut() {
+                    if let Some(n) = app.state.board.notes.iter_mut().find(|n| n.id == note.id) {
+                        *n = note.clone();
                     }
                 }
                 app.state.save_to_file(&app.save_path);
             }
             if ui.button("Load").clicked() {
                 app.state = AppState::load_from_file(&app.save_path);
-                active_board.0 = app.state.current_board;
                 // Remove existing note entities
-                for (e, _, _, _) in notes.iter_mut() {
+                for (e, _, _) in notes.iter_mut() {
                     commands.entity(e).despawn();
                 }
                 // Spawn notes from loaded state
-                for board in app.state.boards.values() {
-                    for note in &board.notes {
-                        commands.spawn((note.clone(), NoteUi::default(), BelongsToBoard(board.id)));
-                    }
+                for note in &app.state.board.notes {
+                    commands.spawn((note.clone(), NoteUi::default()));
                 }
-            }
-
-            // Board selection dropdown
-            if !app.state.boards.is_empty() {
-                let current = app.state.current_board.unwrap_or(0);
-                let mut selection = current;
-                ui.label("Board:");
-                egui::ComboBox::new("board_select", "")
-                    .selected_text(
-                        app.state
-                            .boards
-                            .get(&selection)
-                            .map(|b| b.name.clone())
-                            .unwrap_or_default(),
-                    )
-                    .show_ui(ui, |ui| {
-                        for (&id, board) in &app.state.boards {
-                            ui.selectable_value(&mut selection, id, &board.name);
-                        }
-                    });
-                app.state.current_board = Some(selection);
-                active_board.0 = Some(selection);
+                update_search(&app, &mut search);
             }
 
             ui.separator();
@@ -256,7 +202,7 @@ fn ui_system(
             let changed = ui.text_edit_singleline(&mut search.query).changed();
             if changed {
                 update_search(&app, &mut search);
-                focus_on_match(&mut app, &search, &mut active_board);
+                focus_on_match(&mut app, &search);
             }
             if ui.button("Prev").clicked() && !search.matches.is_empty() {
                 if search.current == 0 {
@@ -264,42 +210,30 @@ fn ui_system(
                 } else {
                     search.current -= 1;
                 }
-                focus_on_match(&mut app, &search, &mut active_board);
+                focus_on_match(&mut app, &search);
             }
             if ui.button("Next").clicked() && !search.matches.is_empty() {
                 search.current = (search.current + 1) % search.matches.len();
-                focus_on_match(&mut app, &search, &mut active_board);
+                focus_on_match(&mut app, &search);
             }
         });
     });
 
     egui::CentralPanel::default().show(ctx, |ui| {
-        if let Some(board_id) = active_board.0 {
-            let mut next_id = app.state.next_note_id;
-            if let Some(board) = app.state.boards.get_mut(&board_id) {
-                let highlight = search
-                    .matches
-                    .get(search.current)
-                    .and_then(|(bid, nid)| if *bid == board_id { Some(*nid) } else { None });
-                board_ui_system(
-                    ui,
-                    board,
-                    board_id,
-                    &mut next_id,
-                    &mut notes,
-                    &mut commands,
-                    &grid,
-                    &mut ev_plop,
-                    &search.query,
-                    highlight,
-                );
-            }
-            app.state.next_note_id = next_id;
-        } else {
-            ui.centered_and_justified(|ui| {
-                ui.label("Create a new board to get started!");
-            });
-        }
+        let mut next_id = app.state.next_note_id;
+        let highlight = search.matches.get(search.current).copied();
+        board_ui_system(
+            ui,
+            &mut app.state.board,
+            &mut next_id,
+            &mut notes,
+            &mut commands,
+            &grid,
+            &mut ev_plop,
+            &search.query,
+            highlight,
+        );
+        app.state.next_note_id = next_id;
     });
 }
 
@@ -307,9 +241,8 @@ fn ui_system(
 fn board_ui_system(
     ui: &mut egui::Ui,
     board: &mut Board,
-    board_id: u64,
     next_note_id: &mut u64,
-    notes: &mut Query<(Entity, &mut NoteData, &mut NoteUi, &BelongsToBoard)>,
+    notes: &mut Query<(Entity, &mut NoteData, &mut NoteUi)>,
     commands: &mut Commands,
     grid: &GridSize,
     ev_plop: &mut EventWriter<PlayPlopEvent>,
@@ -327,23 +260,21 @@ fn board_ui_system(
                 .rect_filled(ui.max_rect(), 0.0, board.background);
 
             // Render existing notes from ECS
-            for (_, mut note, mut ui_state, belongs) in notes.iter_mut() {
-                if belongs.0 == board_id {
-                    let highlight = highlight_note == Some(note.id);
-                    let has_query = !query.is_empty()
-                        && note.text.to_lowercase().contains(&query.to_lowercase());
-                    add_note_ui(
-                        ui,
-                        &mut note,
-                        &mut ui_state,
-                        board,
-                        grid.0,
-                        ev_plop,
-                        query,
-                        has_query,
-                        highlight,
-                    );
-                }
+            for (_, mut note, mut ui_state) in notes.iter_mut() {
+                let highlight = highlight_note == Some(note.id);
+                let has_query =
+                    !query.is_empty() && note.text.to_lowercase().contains(&query.to_lowercase());
+                add_note_ui(
+                    ui,
+                    &mut note,
+                    &mut ui_state,
+                    board,
+                    grid.0,
+                    ev_plop,
+                    query,
+                    has_query,
+                    highlight,
+                );
             }
         })
         .response;
@@ -368,7 +299,7 @@ fn board_ui_system(
             size: Vec2 { x: 120.0, y: 80.0 },
             color: Color32::YELLOW,
         };
-        commands.spawn((data.clone(), NoteUi::default(), BelongsToBoard(board_id)));
+        commands.spawn((data.clone(), NoteUi::default()));
         board.notes.push(data);
 
         // Send event to play sound
@@ -573,24 +504,20 @@ fn setup_audio(mut commands: Commands, asset_server: Res<AssetServer>) {
 
 // Spawn note entities from the loaded application state
 fn spawn_existing_notes(mut commands: Commands, app: Res<PostItData>) {
-    for board in app.state.boards.values() {
-        for note in &board.notes {
-            commands.spawn((note.clone(), NoteUi::default(), BelongsToBoard(board.id)));
-        }
+    for note in &app.state.board.notes {
+        commands.spawn((note.clone(), NoteUi::default()));
     }
 }
 // Auto save when the app exits
 fn autosave_on_exit(
     mut exit_events: EventReader<AppExit>,
     mut app: ResMut<PostItData>,
-    notes: Query<(&NoteData, &BelongsToBoard)>,
+    notes: Query<&NoteData>,
 ) {
     if exit_events.read().next().is_some() {
-        for (note, belongs) in notes.iter() {
-            if let Some(board) = app.state.boards.get_mut(&belongs.0) {
-                if let Some(n) = board.notes.iter_mut().find(|n| n.id == note.id) {
-                    *n = note.clone();
-                }
+        for note in notes.iter() {
+            if let Some(n) = app.state.board.notes.iter_mut().find(|n| n.id == note.id) {
+                *n = note.clone();
             }
         }
         app.state.save_to_file(&app.save_path);
@@ -603,7 +530,6 @@ fn main() {
         .init_resource::<PostItData>()
         .init_resource::<GridSize>()
         .init_resource::<SearchState>()
-        .insert_resource(ActiveBoard(None))
         .add_event::<PlayPlopEvent>()
         .add_plugins(EntropyPlugin::<WyRand>::default())
         .add_plugins(DefaultPlugins)
