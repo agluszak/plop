@@ -1,7 +1,8 @@
+use bevy::app::AppExit;
 use bevy::prelude::*;
 use bevy_egui::EguiContexts;
 use egui::{Color32, Pos2, Rect, Shape, Stroke, Vec2};
-use plop::{AppState, Board, NoteData, snap_to_grid};
+use plop::{snap_to_grid, AppState, Board, NoteData};
 use std::path::PathBuf;
 
 /// Runtime UI state for a note
@@ -424,6 +425,23 @@ fn spawn_existing_notes(mut commands: Commands, app: Res<PostItData>) {
         }
     }
 }
+// Auto save when the app exits
+fn autosave_on_exit(
+    mut exit_events: EventReader<AppExit>,
+    mut app: ResMut<PostItData>,
+    notes: Query<(&NoteData, &BelongsToBoard)>,
+) {
+    if exit_events.read().next().is_some() {
+        for (note, belongs) in notes.iter() {
+            if let Some(board) = app.state.boards.get_mut(&belongs.0) {
+                if let Some(n) = board.notes.iter_mut().find(|n| n.id == note.id) {
+                    *n = note.clone();
+                }
+            }
+        }
+        app.state.save_to_file(&app.save_path);
+    }
+}
 
 fn main() {
     App::new()
@@ -439,5 +457,6 @@ fn main() {
         })
         .add_systems(Startup, (setup_audio, spawn_existing_notes))
         .add_systems(Update, (ui_system, play_plop_sound))
+        .add_systems(Last, autosave_on_exit)
         .run();
 }
